@@ -21,6 +21,7 @@ except ImportError:
 
 # The game you want to run. See https://github.com/deepmind/open_spiel/blob/master/docs/games.md for a list of games
 game = pyspiel.load_game("tic_tac_toe")
+game = pyspiel.load_game("bridge(use_double_dummy_result=true)")
 
 
 class MuZeroConfig:
@@ -36,9 +37,12 @@ class MuZeroConfig:
 
 
         ### Game
-        self.observation_shape =  tuple(self.game.observation_tensor_shape()) # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        shape = self.game.observation_tensor_shape()
+        if len(shape) == 1:
+            shape = [1, 1, shape[0]]
+        self.observation_shape =  tuple(shape) # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
         self.action_space = list(range(self.game.policy_tensor_shape()[0]))  # Fixed list of all possible actions. You should only edit the length
-        self.players = list(range(self.game.num_players()))  # List of players. You should only edit the length
+        self.players = list(range(self.game.num_players() // 2))  # List of players. You should only edit the length
         self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
 
         # Evaluate
@@ -248,6 +252,11 @@ class Spiel:
 
     def reset(self):
         self.board = self.game.new_initial_state()
+        state = self.board
+        while state.is_chance_node():
+            outcomes, probs = zip(*state.chance_outcomes())
+            state.apply_action(numpy.random.choice(outcomes, p=probs))
+
         self.player = 1
         return self.get_observation()
 
@@ -256,7 +265,21 @@ class Spiel:
 
         done = self.board.is_terminal()
 
-        reward = 1 if self.have_winner() else 0
+        rewards = self.board.rewards()
+        reward = 0
+        if self.player == 1:
+            reward = rewards[0]
+        else:
+            reward = rewards[1]
+        if reward < 0:
+            reward = 0
+        
+        # debug
+        if done:
+            print(self.board)
+            if reward:
+                print(self.board.current_player(), self.player)
+                parse_result(str(self.board))
 
         observation = self.get_observation()
 
@@ -269,29 +292,49 @@ class Spiel:
             current_player = 1
         else:
             current_player = 0
+
+        shape = self.game.observation_tensor_shape()
+        if len(shape) == 1:
+            shape = [1, 1, shape[0]]
         return numpy.array(self.board.observation_tensor(current_player)).reshape(
-            self.game.observation_tensor_shape()
-        )
+            shape)
 
     def legal_actions(self):
         return self.board.legal_actions()
 
-    def have_winner(self):
-        rewards = self.board.rewards()
-
-        if self.player == 1:
-
-            if rewards[0] == 1.0:
-                return True
-
-        elif self.player == -1:
-            if rewards[1] == 1.0:
-                return True
-
-        return False
 
     def human_legal_actions(self):
         return [self.board.action_to_string(x) for x in self.board.legal_actions()]
 
     def render(self):
         print(self.board)
+
+def parse_result(result):
+    d = 'Declarer tricks: '
+    di = result.find(d)
+    tricks = int(result[len(d) + di:len(d) + di+2].strip())
+    target_bid = 1
+    target_player = 1
+    s = 'South\n'
+    si = result.find(s)
+    bid_seq = result[len(s)+si:di-1].splitlines()
+    print(bid_seq)
+    row = len(bid_seq) - 1
+    while row >= 0:
+        row -= 1
+        bids = bid_seq[row].split()
+        col = len(bids) - 1
+        while col >= 0:
+            col -= 1
+            bid = bids[col]
+            if bid not in ['Pass', 'Dbl', 'RDbl']:
+                target_bid = int(bid[0])
+                if row == len(bid_seq) - 1:
+                    target_player = 0
+                elif row == 0:
+                    target_player = col + 1
+                else:
+                    target_player = col
+                break
+    print(tricks, target_bid, target_player)
+    return tricks, target_bid, target_player
